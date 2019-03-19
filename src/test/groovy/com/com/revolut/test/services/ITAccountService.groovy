@@ -63,6 +63,19 @@ class ITAccountService extends Specification {
 
     }
 
+    def "create income with negative amount" () {
+        given: "-100 rub for income"
+        def income = [amount:-100, currencyId: CURRENCY]
+
+        when: "request income for user1"
+        def resp = client.post(path: "/users/${USER1}/income", body: income)
+
+        then:
+        resp.status == 400
+        resp.data.message == 'Validation error'
+        resp.data.messages.amount == 'must be greater than or equal to 0'
+    }
+
     def "get all accounts"() {
         when:
         def resp = client.get(path: '/')
@@ -165,15 +178,14 @@ class ITAccountService extends Specification {
         def to = client.get(path: "/users/$USER2")
 
         then:
-        resp.status == 200
-        resp.data.message == 'Transfer successful'
+        resp.status == 204
         expect(from.data.amount, contains(400))
         expect(to.data.amount, contains(100))
     }
 
     def "transfer money when it's not enough failed"() {
         given:
-        def transfer = [userFrom: USER1, userTo: USER2, value: 400, currencyId: CURRENCY]
+        def transfer = [userFrom: USER1, userTo: USER2, amount: 450, currencyId: CURRENCY]
 
         when:
         def resp = client.post(path: '/transfers', body: transfer)
@@ -182,7 +194,7 @@ class ITAccountService extends Specification {
 
         then:
         resp.status == 400
-//        resp.data.code == NOT_ENOUGH_MONEY.getCode()
+        resp.data.message == "User account doesn't have enough funds for transfer"
         expect(from.data.amount, contains(400))
         expect(to.data.amount, contains(100))
     }
