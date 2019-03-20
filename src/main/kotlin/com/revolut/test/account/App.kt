@@ -2,10 +2,9 @@ package com.revolut.test.account
 
 import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.revolut.test.account.dao.AccountRepo
+import com.revolut.test.account.dao.TransitionRepo
 import com.revolut.test.account.err.AccountErr
-import com.revolut.test.account.model.Account
-import com.revolut.test.account.model.Transfer
-import com.revolut.test.account.model.ValidationError
+import com.revolut.test.account.model.*
 import org.jdbi.v3.core.Handle
 import org.jooby.Jooby.run
 import org.jooby.Kooby
@@ -20,10 +19,7 @@ import org.jooby.require
 import org.jooby.to
 import java.math.BigDecimal
 import java.util.*
-import javax.validation.ConstraintViolation
-import java.util.stream.Collectors
 import javax.validation.ConstraintViolationException
-import javax.validation.Path
 
 
 /**
@@ -37,15 +33,16 @@ class App : Kooby({
     use(Jdbi3()
             .doWith { jdbi -> jdbi.installPlugins() }
             .transactionPerRequest(TransactionalRequest()
+                    .attach(TransitionRepo::class.java)
                     .attach(AccountRepo::class.java)))
     use(Jackson().module(KotlinModule::class.java))
 
     path("/") {
-        get {
+        get ("/accounts") {
             require(AccountRepo::class).getAllAccounts()
         }
 
-        post {
+        post ("/accounts") {
             val account = body(Account::class.java)
             val accountRepo = require(AccountRepo::class)
             val id = accountRepo.insertAccount(account)
@@ -53,12 +50,22 @@ class App : Kooby({
             Results.with(acc, 201)
         }
 
-        get("/:id") {
+        get("/transactions/:id") {
+            val id: UUID = param("id").to(UUID::class)
+            require(TransitionRepo::class).getTransaction(id)
+        }
+
+        get("/accounts/:id") {
             val id: Long = param("id").longValue()
             require(AccountRepo::class).getAccount(id)
         }
 
-        get("/users/:userId") {
+        get("/accounts/:id/transitions") {
+            val id: Long = param("id").longValue()
+            require(TransitionRepo::class).getAccountTransitions(id)
+        }
+
+        get("/users/:userId/accounts") {
             val userId: UUID = param("userId").to(UUID::class)
             require(AccountRepo::class).getAccountsForUser(userId)
         }
@@ -67,11 +74,15 @@ class App : Kooby({
             val account = body(Account::class.java)
             val userId: UUID = param("userId").to(UUID::class)
             val accountRepo = require(AccountRepo::class)
+            val transitionRepo = require(TransitionRepo::class)
 
             val exist = accountRepo.getAccountByUserAndCurr(userId, account.currencyId)
                     .orElseThrow { AccountErr("Account not found") }
             val amount = exist.amount + account.amount
             val updated = accountRepo.updateAmount(exist.id, amount)
+
+            transitionRepo.transition(exist.id, account.amount, TransactionType.INCOME)
+
             if (!updated) {
                 throw AccountErr("Account has not been updated")
             }
@@ -83,18 +94,21 @@ class App : Kooby({
             val account = body(Account::class.java)
             val userId: UUID = param("userId").to(UUID::class)
             val accountRepo = require(AccountRepo::class)
+            val transitionRepo = require(TransitionRepo::class)
 
             val exist = accountRepo.getAccountByUserAndCurr(userId, account.currencyId)
                     .orElseThrow { AccountErr("Account not found") }
             checkFunds(exist.amount, account.amount, "withdrawal")
             val amount = exist.amount - account.amount
             accountRepo.updateAmount(exist.id, amount)
+            transitionRepo.transition(exist.id, -account.amount, TransactionType.WITHDRAWAL)
             accountRepo.getAccount(exist.id)
         }
 
         post("/transfers") {
             val transfer = body(Transfer::class.java)
             val accountRepo = require(AccountRepo::class)
+            val transitionRepo = require(TransitionRepo::class)
 
             val from = accountRepo.getAccountByUserAndCurr(transfer.userFrom, transfer.currencyId)
                     .orElseThrow { AccountErr("Account from not found") }
@@ -105,25 +119,41 @@ class App : Kooby({
 
             val isOk = accountRepo.updateAmount(from.id, from.amount - transfer.amount)
                     && accountRepo.updateAmount(to.id, to.amount + transfer.amount)
+
+            val transaction = UUID.randomUUID()
+            transitionRepo
+                    .transition(from.id, -transfer.amount, TransactionType.TRANSFER, transaction)
+                    .transition(to.id, transfer.amount, TransactionType.TRANSFER, transaction)
+
             if (!isOk) {
                 throw AccountErr("Some update error")
             }
-            Results.noContent()
+            Transaction(transaction, transfer.amount)
         }
 
-        err { req, rsp, err ->
-            val cause = err.cause
-            if (cause is ConstraintViolationException) {
-                val constraints = cause.constraintViolations
+        err(ConstraintViolationException::class.java) { _, rsp, err ->
+            val cause = err.cause as ConstraintViolationException
+            val constraints = cause.constraintViolations
 
-                val errors = constraints.associateBy({ it.propertyPath.toString() }, { it.message })
-                rsp.send(ValidationError("Validation error", errors, 400))
-            }
+            val errors = constraints.associateBy({ it.propertyPath.toString() }, { it.message })
+            rsp.send(ValidationError("Validation error", errors, 400))
         }
 
     }.consumes("json").produces("json")
 
 })
+
+private fun TransitionRepo.transition(account: Long,
+                       amount: BigDecimal, type: TransactionType): TransitionRepo {
+    return this.transition(account, amount, type, UUID.randomUUID())
+}
+
+private fun TransitionRepo.transition(account: Long,
+                                      amount: BigDecimal, type: TransactionType,
+                                      transactionId: UUID): TransitionRepo {
+    this.createTransition(Transition(null, account, transactionId, type, amount))
+    return this
+}
 
 private fun checkFunds(amount: BigDecimal, withdrawal: BigDecimal, action: String) {
     if (amount < withdrawal) {

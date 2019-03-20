@@ -22,6 +22,7 @@ class ITAccountService extends Specification {
 
     @Shared def client
     @Shared def accountId
+    @Shared def transactionId
     @Shared @AutoCleanup("stop")
     App app
 
@@ -38,7 +39,7 @@ class ITAccountService extends Specification {
         def account = [currencyId: CURRENCY, userId: USER1, amount: amount]
 
         when: "request account for users"
-        def resp = client.post(path: "/", body: account)
+        def resp = client.post(path: "/accounts", body: account)
 
         then:
         resp.status == 201
@@ -78,7 +79,7 @@ class ITAccountService extends Specification {
 
     def "get all accounts"() {
         when:
-        def resp = client.get(path: '/')
+        def resp = client.get(path: '/accounts')
 
         then:
         resp.status == 200
@@ -88,7 +89,7 @@ class ITAccountService extends Specification {
 
     def "get accounts for non existent user returns empty list"() {
         when:
-        def resp = client.get(path: "/users/$USER2")
+        def resp = client.get(path: "/users/$USER2/accounts")
 
         then:
         resp.status == 200
@@ -100,7 +101,7 @@ class ITAccountService extends Specification {
         def account2 = [currencyId: CURRENCY, userId: USER2]
 
         when: "request account for users"
-        def resp = client.post(path: "/", body: account2)
+        def resp = client.post(path: "/accounts", body: account2)
 
         then:
         resp.status == 201
@@ -111,7 +112,7 @@ class ITAccountService extends Specification {
 
     def "get accounts for existent user returns account data"() {
         when:
-        def resp = client.get(path: "/users/$USER1")
+        def resp = client.get(path: "/users/$USER1/accounts")
 
         then:
         resp.status == 200
@@ -140,8 +141,8 @@ class ITAccountService extends Specification {
 
         when:
         def resp = client.post(path: '/transfers', body: transfer)
-        def from = client.get(path: "/users/$USER2")
-        def to = client.get(path: "/users/$USER1")
+        def from = client.get(path: "/users/$USER2/accounts")
+        def to = client.get(path: "/users/$USER1/accounts")
 
         then:
         resp.status == 400
@@ -157,8 +158,8 @@ class ITAccountService extends Specification {
 
         when:
         def resp = client.post(path: '/transfers', body: transfer)
-        def from = client.get(path: "/users/$USER2")
-        def to = client.get(path: "/users/$USER1")
+        def from = client.get(path: "/users/$USER2/accounts")
+        def to = client.get(path: "/users/$USER1/accounts")
 
         then:
         resp.status == 400
@@ -174,11 +175,13 @@ class ITAccountService extends Specification {
 
         when:
         def resp = client.post(path: '/transfers', body: transfer)
-        def from = client.get(path: "/users/$USER1")
-        def to = client.get(path: "/users/$USER2")
+        def from = client.get(path: "/users/$USER1/accounts")
+        def to = client.get(path: "/users/$USER2/accounts")
 
         then:
-        resp.status == 204
+        resp.status == 200
+        resp.data.amount == 100
+        (transactionId = resp.data.transactionId) != null
         expect(from.data.amount, contains(400))
         expect(to.data.amount, contains(100))
     }
@@ -189,13 +192,31 @@ class ITAccountService extends Specification {
 
         when:
         def resp = client.post(path: '/transfers', body: transfer)
-        def from = client.get(path: "/users/$USER1")
-        def to = client.get(path: "/users/$USER2")
+        def from = client.get(path: "/users/$USER1/accounts")
+        def to = client.get(path: "/users/$USER2/accounts")
 
         then:
         resp.status == 400
         resp.data.message == "User account doesn't have enough funds for transfer"
         expect(from.data.amount, contains(400))
         expect(to.data.amount, contains(100))
+    }
+
+    def "get transitions for user 1" () {
+        when:
+        def resp = client.get(path: "/accounts/$accountId/transitions")
+
+        then:
+        resp.status == 200
+        expect(resp.data.amount, contains(100, 350, -100))
+    }
+
+    def "get transitions for transaction" () {
+        when:
+        def resp = client.get(path: "/transactions/$transactionId")
+
+        then:
+        resp.status == 200
+        expect(resp.data.amount, contains(-100, 100))
     }
 }
