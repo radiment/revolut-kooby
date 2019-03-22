@@ -6,7 +6,6 @@ import spock.lang.AutoCleanup
 import spock.lang.Shared
 import spock.lang.Specification
 import spock.lang.Stepwise
-import spock.util.concurrent.AsyncConditions
 
 import static groovyx.net.http.ContentType.JSON
 import static org.hamcrest.Matchers.*
