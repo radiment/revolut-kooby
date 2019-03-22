@@ -53,7 +53,7 @@ dependencyManagement {
 
 dependencies {
   compile "org.jooby:jooby-lang-kotlin"
-  compile "org.jooby:jooby-jetty"
+  compile 'org.jooby:jooby-netty'
   compile 'org.jooby:jooby-jdbi3'
   compile 'org.jooby:jooby-hbv'
   compile 'org.hibernate:hibernate-validator:5.4.3.Final'

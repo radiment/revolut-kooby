@@ -4,6 +4,7 @@ import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.revolut.test.account.dao.AccountRepo
 import com.revolut.test.account.dao.TransitionRepo
 import com.revolut.test.account.err.AccountErr
+import com.revolut.test.account.err.ConcurrentChangeErr
 import com.revolut.test.account.model.*
 import org.jdbi.v3.core.Handle
 import org.jooby.Jooby.run
@@ -20,6 +21,9 @@ import org.jooby.to
 import java.math.BigDecimal
 import java.util.*
 import javax.validation.ConstraintViolationException
+import java.util.concurrent.ForkJoinPool
+
+
 
 
 /**
@@ -36,6 +40,7 @@ class App : Kooby({
                     .attach(TransitionRepo::class.java)
                     .attach(AccountRepo::class.java)))
     use(Jackson().module(KotlinModule::class.java))
+    executor(ForkJoinPool())
 
     path("/") {
         get ("/accounts") {
@@ -79,13 +84,9 @@ class App : Kooby({
             val exist = accountRepo.getAccountByUserAndCurr(userId, account.currencyId)
                     .orElseThrow { AccountErr("Account not found") }
             val amount = exist.amount + account.amount
-            val updated = accountRepo.updateAmount(exist.id, amount)
+            accountRepo.tryUpdate(exist.id, amount, exist.amount)
 
             transitionRepo.transition(exist.id, account.amount, TransactionType.INCOME)
-
-            if (!updated) {
-                throw AccountErr("Account has not been updated")
-            }
             require(Handle::class).commit()
             accountRepo.getAccount(exist.id)
         }
@@ -100,7 +101,7 @@ class App : Kooby({
                     .orElseThrow { AccountErr("Account not found") }
             checkFunds(exist.amount, account.amount, "withdrawal")
             val amount = exist.amount - account.amount
-            accountRepo.updateAmount(exist.id, amount)
+            accountRepo.tryUpdate(exist.id, amount, exist.amount)
             transitionRepo.transition(exist.id, -account.amount, TransactionType.WITHDRAWAL)
             accountRepo.getAccount(exist.id)
         }
@@ -109,26 +110,24 @@ class App : Kooby({
             val transfer = body(Transfer::class.java)
             val accountRepo = require(AccountRepo::class)
             val transitionRepo = require(TransitionRepo::class)
+            val amount = transfer.amount
 
             val from = accountRepo.getAccountByUserAndCurr(transfer.userFrom, transfer.currencyId)
                     .orElseThrow { AccountErr("Account from not found") }
-            checkFunds(from.amount, transfer.amount, "transfer")
+            checkFunds(from.amount, amount, "transfer")
 
             val to = accountRepo.getAccountByUserAndCurr(transfer.userTo, transfer.currencyId)
                     .orElseThrow { AccountErr("Account to not found") }
 
-            val isOk = accountRepo.updateAmount(from.id, from.amount - transfer.amount)
-                    && accountRepo.updateAmount(to.id, to.amount + transfer.amount)
+            accountRepo.tryUpdate(from.id, from.amount - amount, from.amount)
+                    .tryUpdate(to.id, to.amount + amount, to.amount)
 
             val transaction = UUID.randomUUID()
             transitionRepo
-                    .transition(from.id, -transfer.amount, TransactionType.TRANSFER, transaction)
-                    .transition(to.id, transfer.amount, TransactionType.TRANSFER, transaction)
+                    .transition(from.id, -amount, TransactionType.TRANSFER, transaction)
+                    .transition(to.id, amount, TransactionType.TRANSFER, transaction)
 
-            if (!isOk) {
-                throw AccountErr("Some update error")
-            }
-            Transaction(transaction, transfer.amount)
+            Transaction(transaction, amount)
         }
 
         err(ConstraintViolationException::class.java) { _, rsp, err ->
@@ -142,6 +141,15 @@ class App : Kooby({
     }.consumes("json").produces("json")
 
 })
+
+private fun AccountRepo.tryUpdate(id: Long, amount: BigDecimal, oldAmount: BigDecimal)
+        : AccountRepo {
+    if (!this.updateAmount(id, amount, oldAmount)) {
+        throw ConcurrentChangeErr("Concurrent update of the amount")
+    }
+    return this
+}
+
 
 private fun TransitionRepo.transition(account: Long,
                        amount: BigDecimal, type: TransactionType): TransitionRepo {
