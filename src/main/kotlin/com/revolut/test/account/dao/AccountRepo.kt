@@ -25,7 +25,7 @@ interface AccountRepo {
 
     @SqlQuery("select * from account a " +
             "where a.user_id = :userId and currency_id = :currencyId")
-    fun getAccountByUserAndCurr(userId: UUID, currencyId: Int) : Optional<Account>
+    fun getAccount(userId: UUID, currencyId: Int) : Optional<Account>
 
     @SqlUpdate("update account set amount = :amount where id = :id and amount = :oldAmount")
     fun updateAmount(id: Long, amount: BigDecimal, oldAmount: BigDecimal) : Boolean

@@ -4,26 +4,21 @@ import com.fasterxml.jackson.module.kotlin.KotlinModule
 import com.revolut.test.account.dao.AccountRepo
 import com.revolut.test.account.dao.TransitionRepo
 import com.revolut.test.account.err.AccountErr
-import com.revolut.test.account.err.ConcurrentChangeErr
+import com.revolut.test.account.err.NotFoundErr
 import com.revolut.test.account.model.*
 import org.jdbi.v3.core.Handle
+import org.jooby.*
 import org.jooby.Jooby.run
-import org.jooby.Kooby
-import org.jooby.Results
 import org.jooby.flyway.Flywaydb
 import org.jooby.hbv.Hbv
 import org.jooby.jdbc.Jdbc
 import org.jooby.jdbi.Jdbi3
 import org.jooby.jdbi.TransactionalRequest
 import org.jooby.json.Jackson
-import org.jooby.require
-import org.jooby.to
 import java.math.BigDecimal
 import java.util.*
-import javax.validation.ConstraintViolationException
 import java.util.concurrent.ForkJoinPool
-
-
+import javax.validation.ConstraintViolationException
 
 
 /**
@@ -43,11 +38,11 @@ class App : Kooby({
     executor(ForkJoinPool())
 
     path("/") {
-        get ("/accounts") {
+        get("/accounts") {
             require(AccountRepo::class).getAllAccounts()
         }
 
-        post ("/accounts") {
+        post("/accounts") {
             val account = body(Account::class.java)
             val accountRepo = require(AccountRepo::class)
             val id = accountRepo.insertAccount(account)
@@ -81,8 +76,8 @@ class App : Kooby({
             val accountRepo = require(AccountRepo::class)
             val transitionRepo = require(TransitionRepo::class)
 
-            val exist = accountRepo.getAccountByUserAndCurr(userId, account.currencyId)
-                    .orElseThrow { AccountErr("Account not found") }
+            val exist = accountRepo.getAccount(userId, account.currencyId)
+                    .orElseThrow { NotFoundErr("Account not found") }
             val amount = exist.amount + account.amount
             accountRepo.tryUpdate(exist.id, amount, exist.amount)
 
@@ -97,8 +92,8 @@ class App : Kooby({
             val accountRepo = require(AccountRepo::class)
             val transitionRepo = require(TransitionRepo::class)
 
-            val exist = accountRepo.getAccountByUserAndCurr(userId, account.currencyId)
-                    .orElseThrow { AccountErr("Account not found") }
+            val exist = accountRepo.getAccount(userId, account.currencyId)
+                    .orElseThrow { NotFoundErr("Account not found") }
             checkFunds(exist.amount, account.amount, "withdrawal")
             val amount = exist.amount - account.amount
             accountRepo.tryUpdate(exist.id, amount, exist.amount)
@@ -112,12 +107,12 @@ class App : Kooby({
             val transitionRepo = require(TransitionRepo::class)
             val amount = transfer.amount
 
-            val from = accountRepo.getAccountByUserAndCurr(transfer.userFrom, transfer.currencyId)
-                    .orElseThrow { AccountErr("Account from not found") }
+            val from = accountRepo.getAccount(transfer.userFrom, transfer.currencyId)
+                    .orElseThrow { NotFoundErr("Account from not found") }
             checkFunds(from.amount, amount, "transfer")
 
-            val to = accountRepo.getAccountByUserAndCurr(transfer.userTo, transfer.currencyId)
-                    .orElseThrow { AccountErr("Account to not found") }
+            val to = accountRepo.getAccount(transfer.userTo, transfer.currencyId)
+                    .orElseThrow { NotFoundErr("Account to not found") }
 
             accountRepo.tryUpdate(from.id, from.amount - amount, from.amount)
                     .tryUpdate(to.id, to.amount + amount, to.amount)
@@ -130,12 +125,18 @@ class App : Kooby({
             Transaction(transaction, amount)
         }
 
+        err(AccountErr::class.java) { _, rsp, err ->
+            val accountErr = err.cause as AccountErr
+            val error = Error(accountErr.message, accountErr.status.value())
+            rsp.send(Results.with(error, accountErr.status))
+        }
+
         err(ConstraintViolationException::class.java) { _, rsp, err ->
             val cause = err.cause as ConstraintViolationException
             val constraints = cause.constraintViolations
 
             val errors = constraints.associateBy({ it.propertyPath.toString() }, { it.message })
-            rsp.send(ValidationError("Validation error", errors, 400))
+            rsp.send(Error("Validation error", 400, errors))
         }
 
     }.consumes("json").produces("json")
@@ -145,14 +146,14 @@ class App : Kooby({
 private fun AccountRepo.tryUpdate(id: Long, amount: BigDecimal, oldAmount: BigDecimal)
         : AccountRepo {
     if (!this.updateAmount(id, amount, oldAmount)) {
-        throw ConcurrentChangeErr("Concurrent update of the amount")
+        throw AccountErr("Concurrent update of the amount", Status.CONFLICT)
     }
     return this
 }
 
 
 private fun TransitionRepo.transition(account: Long,
-                       amount: BigDecimal, type: TransactionType): TransitionRepo {
+                                      amount: BigDecimal, type: TransactionType): TransitionRepo {
     return this.transition(account, amount, type, UUID.randomUUID())
 }
 

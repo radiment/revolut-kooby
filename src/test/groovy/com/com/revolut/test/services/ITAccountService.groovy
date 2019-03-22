@@ -6,6 +6,7 @@ import spock.lang.AutoCleanup
 import spock.lang.Shared
 import spock.lang.Specification
 import spock.lang.Stepwise
+import spock.util.concurrent.AsyncConditions
 
 import static groovyx.net.http.ContentType.JSON
 import static org.hamcrest.Matchers.*
@@ -68,6 +69,19 @@ class ITAccountService extends Specification {
 
   }
 
+  def "income to not existent account"() {
+    given: "350 rub for income"
+    def income = [amount: 350, currencyId: CURRENCY]
+
+    when: "request income for user2"
+    def resp = client.post(path: "/users/${USER2}/income", body: income)
+
+    then:
+    resp.status == 404
+    resp.data.message == 'Account not found'
+    resp.data.status == 404
+  }
+
   def "create income with negative amount"() {
     given: "-100 rub for income"
     def income = [amount: -100, currencyId: CURRENCY]
@@ -100,20 +114,6 @@ class ITAccountService extends Specification {
     expect(resp.data, empty())
   }
 
-  def "create second account"() {
-    given: "user ids and currency"
-    def account2 = [currencyId: CURRENCY, userId: USER2]
-
-    when: "request account for users"
-    def resp = client.post(path: "/accounts", body: account2)
-
-    then:
-    resp.status == 201
-    resp.data.userId == USER2
-    resp.data.amount == 0
-    resp.data.currencyId == CURRENCY
-  }
-
   def "get accounts for existent user returns account data"() {
     when:
     def resp = client.get(path: "/users/$USER1/accounts")
@@ -140,6 +140,54 @@ class ITAccountService extends Specification {
   }
 
   def "transfer money from non existent user will fail"() {
+    given:
+    def transfer = [userFrom: USER2, userTo: USER1, amount: 100, currencyId: CURRENCY]
+
+    when:
+    def resp = client.post(path: '/transfers', body: transfer)
+    def from = client.get(path: "/users/$USER2/accounts")
+    def to = client.get(path: "/users/$USER1/accounts")
+
+    then:
+    resp.status == 404
+    resp.data.status == 404
+    resp.data.message == "Account from not found"
+    expect(to.data.amount, contains(500))
+    expect(from.data, empty())
+  }
+
+  def "transfer money to non existent user will fail"() {
+    given:
+    def transfer = [userFrom: USER1, userTo: USER2, amount: 100, currencyId: CURRENCY]
+
+    when:
+    def resp = client.post(path: '/transfers', body: transfer)
+    def from = client.get(path: "/users/$USER1/accounts")
+    def to = client.get(path: "/users/$USER2/accounts")
+
+    then:
+    resp.status == 404
+    resp.data.status == 404
+    resp.data.message == "Account to not found"
+    expect(from.data.amount, contains(500))
+    expect(to.data, empty())
+  }
+
+  def "create second account"() {
+    given: "user ids and currency"
+    def account2 = [currencyId: CURRENCY, userId: USER2]
+
+    when: "request account for users"
+    def resp = client.post(path: "/accounts", body: account2)
+
+    then:
+    resp.status == 201
+    resp.data.userId == USER2
+    resp.data.amount == 0
+    resp.data.currencyId == CURRENCY
+  }
+
+  def "transfer money from user with not enough money"() {
     given:
     def transfer = [userFrom: USER2, userTo: USER1, amount: 100, currencyId: CURRENCY]
 
@@ -254,7 +302,7 @@ class ITAccountService extends Specification {
       def resp = client.post(path: '/transfers', body: transfer)
       println(resp.data)
       conds.evaluate {
-        assert resp.status == 400
+        assert resp.status == 409
       }
     }
     Thread.sleep(100)
