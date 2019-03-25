@@ -114,8 +114,11 @@ class App : Kooby({
             val to = accountRepo.getAccount(transfer.userTo, transfer.currencyId)
                     .orElseThrow { NotFoundErr("Account to not found") }
 
-            accountRepo.tryUpdate(from.id, from.amount - amount, from.amount)
-                    .tryUpdate(to.id, to.amount + amount, to.amount)
+            runInOrder(from.id > to.id, Runnable {
+                accountRepo.tryUpdate(from.id, from.amount - amount, from.amount)
+            }, Runnable {
+                accountRepo.tryUpdate(to.id, to.amount + amount, to.amount)
+            })
 
             val transaction = UUID.randomUUID()
             transitionRepo
@@ -142,6 +145,16 @@ class App : Kooby({
     }.consumes("json").produces("json")
 
 })
+
+private fun runInOrder(natureOrder: Boolean, first: Runnable, second: Runnable) {
+  if (natureOrder) {
+      first.run()
+      second.run()
+  } else {
+      second.run()
+      first.run()
+  }
+}
 
 private fun AccountRepo.tryUpdate(id: Long, amount: BigDecimal, oldAmount: BigDecimal)
         : AccountRepo {
